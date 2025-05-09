@@ -171,7 +171,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 32.0),
                 child: Text(
-                  'StudyLink',
+                  'SistLink',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 28,

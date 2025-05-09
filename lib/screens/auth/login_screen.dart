@@ -129,7 +129,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
                   Text(
-                    'StudyLink', // Logo Placeholder
+                    'SistLink', // Logo Placeholder
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 32,

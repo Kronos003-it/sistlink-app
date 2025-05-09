@@ -137,7 +137,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 children: <Widget>[
                   // Logo Placeholder
                   Text(
-                    'StudyLink', // Using text as placeholder for logo
+                    'SistLink', // Using text as placeholder for logo
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 32,
