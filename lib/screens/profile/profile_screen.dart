@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:sist_link1/screens/profile/edit_profile_screen.dart';
 import 'package:sist_link1/screens/chat/chat_screen.dart';
 import 'package:sist_link1/screens/admin/admin_dashboard_screen.dart';
+import 'package:sist_link1/screens/auth/login_screen.dart'; // For navigation after logout
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
@@ -15,9 +16,9 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  Map<String, dynamic>? _profileUserData; // Store fetched data here
+  Map<String, dynamic>? _profileUserData;
   bool _isFollowing = false;
-  bool _isLoading = true; // Combined loading state
+  bool _isLoading = true;
   bool _isProcessingFollow = false;
   List<dynamic> _currentUserFollowing = [];
   String? _currentUserId;
@@ -74,7 +75,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _toggleFollow() async {
-    // ... (keep existing _toggleFollow logic, ensure it calls _loadProfileData or setState to refresh UI)
     if (_currentUserId == null || _currentUserId == widget.userId) return;
     setState(() => _isProcessingFollow = true);
     final currentUserRef = FirebaseFirestore.instance
@@ -99,7 +99,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           'followers': FieldValue.arrayUnion([_currentUserId]),
         });
       }
-      // Refresh data after follow/unfollow
       await _loadProfileData();
     } catch (e) {
       print("Error toggling follow: $e");
@@ -109,9 +108,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _startChat(String profileUsername) async {
-    // ... (keep existing _startChat logic)
     if (_currentUserId == null || _currentUserId == widget.userId) return;
-
     final currentUserDoc =
         await FirebaseFirestore.instance
             .collection('users')
@@ -119,14 +116,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
             .get();
     String currentUsername =
         currentUserDoc.data()?['username'] ?? 'Unknown User';
-
     List<String> ids = [_currentUserId!, widget.userId];
     ids.sort();
     String chatId = ids.join('_');
     final chatDocRef = FirebaseFirestore.instance
         .collection('chats')
         .doc(chatId);
-
     try {
       final chatDoc = await chatDocRef.get();
       if (!chatDoc.exists) {
@@ -173,6 +168,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Future<void> _logout() async {
+    await FirebaseAuth.instance.signOut();
+    // AuthWrapper in main.dart will handle navigation to LoginScreen
+    // For a more explicit navigation and to clear routes:
+    if (mounted) {
+      Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
+        (route) => false,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final Color primaryColor = Colors.blueAccent[700]!;
@@ -212,7 +219,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           size: 50,
                           color: Colors.grey[600],
                         ),
-                        // TODO: Replace with actual profile picture if implemented
                       ),
                       const SizedBox(height: 16),
                       Text(
@@ -253,31 +259,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                       ),
                       const SizedBox(height: 24),
-
                       _buildInfoField('Bio', _profileUserData!['bio'] ?? ''),
                       _buildInfoField(
                         'Email',
                         _profileUserData!['email'] ?? '',
                       ),
-
-                      // Mockup has "School Name" - we don't have this field.
-                      // Mockup has "Contact Information" which is email here.
                       const SizedBox(height: 24),
-
                       if (_currentUserId == widget.userId) ...[
                         ElevatedButton(
-                          onPressed: () {
-                            Navigator.of(context)
-                                .push(
-                                  MaterialPageRoute(
-                                    builder:
-                                        (context) => const EditProfileScreen(),
-                                  ),
-                                )
-                                .then(
-                                  (_) => _loadProfileData(),
-                                ); // Refresh on return
-                          },
+                          onPressed:
+                              () => Navigator.of(context)
+                                  .push(
+                                    MaterialPageRoute(
+                                      builder:
+                                          (context) =>
+                                              const EditProfileScreen(),
+                                    ),
+                                  )
+                                  .then((_) => _loadProfileData()),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: primaryColor,
                             padding: const EdgeInsets.symmetric(
@@ -296,14 +295,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         if (_profileUserData!['isAdmin'] == true) ...[
                           const SizedBox(height: 10),
                           ElevatedButton(
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder:
-                                      (context) => const AdminDashboardScreen(),
+                            onPressed:
+                                () => Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder:
+                                        (context) =>
+                                            const AdminDashboardScreen(),
+                                  ),
                                 ),
-                              );
-                            },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.orangeAccent,
                             ),
@@ -313,6 +312,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             ),
                           ),
                         ],
+                        const SizedBox(
+                          height: 10,
+                        ), // Space before logout button
+                        TextButton.icon(
+                          icon: Icon(Icons.logout, color: Colors.red[700]),
+                          label: Text(
+                            'Logout',
+                            style: TextStyle(
+                              color: Colors.red[700],
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          onPressed: _logout,
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 10,
+                            ),
+                          ),
+                        ),
                       ] else ...[
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -362,8 +381,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         'Posts by ${_profileUserData!['username'] ?? 'User'}',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
-                      // Existing StreamBuilder for posts can remain here or be refactored.
-                      // For brevity, assuming it's kept similar to before.
                       StreamBuilder<QuerySnapshot>(
                         stream:
                             FirebaseFirestore.instance
