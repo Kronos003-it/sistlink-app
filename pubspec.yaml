@@ -33,10 +33,10 @@ dependencies:
   firebase_core: ^3.13.0 # Fetched 2.32.0, latest 3.13.0
   firebase_auth: ^5.5.3 # Check for latest
   cloud_firestore: ^5.6.7 # Check for latest
-  firebase_storage: ^12.4.5 # Check for latest - Removing for now as billing is required
+  firebase_storage: ^12.4.5 # For image uploads
   firebase_messaging: ^15.2.5 # Check for latest
   firebase_analytics: ^11.4.5 # Check for latest
-  # image_picker: ^1.1.2 # Removed - requires storage
+  image_picker: ^1.1.2 # For picking images from gallery/camera
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.

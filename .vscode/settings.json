@@ -2,5 +2,6 @@
     "java.configuration.updateBuildConfiguration": "interactive",
     "cSpell.words": [
         "buildscript"
-    ]
+    ],
+    "cmake.sourceDirectory": "/Users/mac/Desktop/sistlink/sist_link1/linux"
 }

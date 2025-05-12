@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:io'; // Re-added
+import 'package:image_picker/image_picker.dart'; // Re-added
+import 'package:firebase_storage/firebase_storage.dart'
+    as firebase_storage; // Re-added
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -14,7 +18,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _bioController = TextEditingController();
   bool _isLoading = false;
-  String? _currentEmail = ''; // To display, not editable here
+  String? _currentEmail = '';
+  File? _pickedImageFile; // Re-added
+  String? _currentProfilePicUrl; // Re-added
+  bool _isUploadingPfp = false; // Re-added
 
   User? _currentUser;
 
@@ -38,19 +45,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           final data = userDoc.data() as Map<String, dynamic>;
           _usernameController.text = data['username'] ?? '';
           _bioController.text = data['bio'] ?? '';
-          _currentEmail =
-              data['email'] ?? _currentUser!.email; // Fallback to auth email
+          _currentEmail = data['email'] ?? _currentUser!.email;
+          _currentProfilePicUrl = data['profilePicUrl'] as String?; // Re-added
         } else {
-          // User document might not exist if signup process was interrupted
-          // or if it's an old account. Fallback to auth data.
+          // Fallback if user document doesn't exist but user is authenticated
+          _currentProfilePicUrl =
+              _currentUser!.photoURL; // Get from Auth if available
           _usernameController.text = _currentUser!.displayName ?? '';
           _currentEmail = _currentUser!.email ?? '';
         }
       } catch (e) {
         print("Error loading user data: $e");
-        // Fallback to auth data in case of error
-        _usernameController.text = _currentUser?.displayName ?? '';
-        _currentEmail = _currentUser?.email ?? '';
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Could not load profile data.')),
@@ -62,42 +67,107 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
+  Future<void> _pickProfileImage() async {
+    try {
+      final pickedFile = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 50, // Compress image
+      );
+      if (pickedFile != null) {
+        setState(() {
+          _pickedImageFile = File(pickedFile.path);
+        });
+      }
+    } catch (e) {
+      print("Error picking profile image: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Failed to pick image.')));
+      }
+    }
+  }
+
   Future<void> _updateProfile() async {
-    if (_formKey.currentState!.validate()) {
-      setState(() => _isLoading = true);
-      try {
-        // Update Firestore
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(_currentUser!.uid)
-            .update({
-              'username': _usernameController.text.trim(),
-              'bio': _bioController.text.trim(),
-            });
+    if (!_formKey.currentState!.validate()) return;
 
-        // Update FirebaseAuth display name
-        await _currentUser?.updateDisplayName(_usernameController.text.trim());
+    setState(() {
+      _isLoading = true; // General loading for form processing
+      _isUploadingPfp =
+          _pickedImageFile != null; // Specific flag for PFP upload
+    });
 
-        // Refresh user data in case display name update was separate
+    String? newProfilePicUrl;
+
+    try {
+      if (_pickedImageFile != null) {
+        // Upload new profile picture
+        String fileName = 'profile.jpg'; // Consistent file name to overwrite
+        firebase_storage.Reference ref = firebase_storage
+            .FirebaseStorage
+            .instance
+            .ref()
+            .child('profile_pics')
+            .child(_currentUser!.uid)
+            .child(fileName);
+
+        await ref.putFile(_pickedImageFile!);
+        newProfilePicUrl = await ref.getDownloadURL();
+      }
+
+      Map<String, dynamic> dataToUpdate = {
+        'username': _usernameController.text.trim(),
+        'bio': _bioController.text.trim(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+
+      if (newProfilePicUrl != null) {
+        dataToUpdate['profilePicUrl'] = newProfilePicUrl;
+      } else if (_pickedImageFile == null && _currentProfilePicUrl != null) {
+        // If no new image was picked, but there was an existing one, keep it.
+        // This case is implicitly handled by not adding profilePicUrl to dataToUpdate
+        // unless a new one is uploaded. If you wanted to allow REMOVING a PFP,
+        // you'd need a separate UI element and logic to set profilePicUrl to null or FieldValue.delete().
+      }
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(_currentUser!.uid)
+          .update(dataToUpdate);
+
+      // Update display name and photoURL in Firebase Auth
+      String newDisplayName = _usernameController.text.trim();
+      bool authProfileUpdated = false;
+      if (_currentUser!.displayName != newDisplayName) {
+        await _currentUser?.updateDisplayName(newDisplayName);
+        authProfileUpdated = true;
+      }
+      if (newProfilePicUrl != null &&
+          _currentUser!.photoURL != newProfilePicUrl) {
+        await _currentUser?.updatePhotoURL(newProfilePicUrl);
+        authProfileUpdated = true;
+      }
+
+      if (authProfileUpdated) {
         await _currentUser?.reload();
         _currentUser = FirebaseAuth.instance.currentUser;
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Profile updated successfully!')),
-          );
-          Navigator.of(context).pop(); // Go back to profile screen
-        }
-      } catch (e) {
-        print("Error updating profile: $e");
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to update profile.')),
-          );
-        }
-      } finally {
-        if (mounted) setState(() => _isLoading = false);
       }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile updated successfully!')),
+        );
+        Navigator.of(context).pop(true); // Pop with true to indicate success
+      }
+    } catch (e) {
+      print("Error updating profile: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update profile: ${e.toString()}')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -142,6 +212,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
+  // Removed _getImageProvider method
+
   @override
   Widget build(BuildContext context) {
     final Color primaryColor = Colors.blueAccent[700]!;
@@ -170,36 +242,75 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: <Widget>[
                       Center(
-                        child: CircleAvatar(
-                          radius: 50,
-                          backgroundColor: Colors.grey[300],
-                          child: Icon(
-                            Icons.person,
-                            size: 50,
-                            color: Colors.grey[600],
-                          ),
-                          // TODO: Add profile picture upload/display
+                        child: Stack(
+                          alignment: Alignment.bottomRight,
+                          children: [
+                            CircleAvatar(
+                              radius: 50,
+                              backgroundColor: Colors.grey[300],
+                              backgroundImage:
+                                  _pickedImageFile != null
+                                      ? FileImage(_pickedImageFile!)
+                                      : (_currentProfilePicUrl != null &&
+                                                  _currentProfilePicUrl!
+                                                      .isNotEmpty
+                                              ? NetworkImage(
+                                                _currentProfilePicUrl!,
+                                              )
+                                              : null)
+                                          as ImageProvider?,
+                              child:
+                                  (_pickedImageFile == null &&
+                                          (_currentProfilePicUrl == null ||
+                                              _currentProfilePicUrl!.isEmpty))
+                                      ? Icon(
+                                        Icons.person,
+                                        size: 50,
+                                        color: Colors.grey[600],
+                                      )
+                                      : null,
+                            ),
+                            Material(
+                              color: primaryColor,
+                              shape: const CircleBorder(),
+                              clipBehavior: Clip.hardEdge,
+                              child: InkWell(
+                                onTap: _pickProfileImage,
+                                child: const Padding(
+                                  padding: EdgeInsets.all(6.0),
+                                  child: Icon(
+                                    Icons.edit,
+                                    color: Colors.white,
+                                    size: 18,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+                      if (_isUploadingPfp)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16.0),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
                       const SizedBox(height: 32),
                       _buildLabeledTextField(
                         controller: _usernameController,
-                        label: 'Username', // Mockup says "User Name"
-                        validator: (value) {
-                          if (value == null || value.isEmpty)
-                            return 'Please enter a username';
-                          return null;
-                        },
+                        label: 'Username',
+                        validator:
+                            (value) =>
+                                (value == null || value.isEmpty)
+                                    ? 'Please enter a username'
+                                    : null,
                       ),
                       const SizedBox(height: 16),
                       _buildLabeledTextField(
                         controller: _bioController,
                         label: 'Bio',
                         maxLines: 3,
-                        // Bio is optional, no validator
                       ),
                       const SizedBox(height: 16),
-                      // Display email (non-editable here as per typical UX)
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -229,9 +340,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           ),
                         ],
                       ),
-
-                      // Mockup shows "School Name", "Contact Information" (Phone) - not implemented
-                      // Mockup shows "Change password", "Manage notifications", "Privacy settings" - not implemented here
                       const SizedBox(height: 32),
                       ElevatedButton(
                         onPressed: _updateProfile,

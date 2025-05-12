@@ -106,28 +106,37 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           'users': FieldValue.arrayRemove([_currentUserId]),
           'admins': FieldValue.arrayRemove([_currentUserId]),
           'userNames.$_currentUserId': FieldValue.delete(),
+          'updatedAt':
+              FieldValue.serverTimestamp(), // Ensure updatedAt is part of the update
         });
 
-        // Check if group becomes empty or has no admins
-        final updatedChatSnap = await chatRef.get();
-        if (updatedChatSnap.exists) {
-          final updatedData = updatedChatSnap.data();
-          final List<String> remainingUsers = List<String>.from(
-            updatedData?['users'] ?? [],
+        // Calculate remaining users and admins based on the state *before* the current user left.
+        // This avoids a get() call that might fail due to permissions after leaving.
+        if (_chatData != null && _currentUserId != null) {
+          List<String> usersInOldDoc = List<String>.from(
+            _chatData!['users'] ?? [],
           );
-          final List<String> remainingAdmins = List<String>.from(
-            updatedData?['admins'] ?? [],
+          List<String> adminsInOldDoc = List<String>.from(
+            _chatData!['admins'] ?? [],
           );
 
-          if (remainingUsers.isEmpty) {
+          List<String> usersAfterSelfRemoval = List<String>.from(usersInOldDoc)
+            ..remove(_currentUserId!);
+          List<String> adminsAfterSelfRemoval = List<String>.from(
+            adminsInOldDoc,
+          )..remove(_currentUserId!);
+
+          if (usersAfterSelfRemoval.isEmpty) {
             await chatRef.delete(); // Delete group if empty
             print("Group deleted as it became empty.");
-          } else if (remainingAdmins.isEmpty && remainingUsers.isNotEmpty) {
+          } else if (adminsAfterSelfRemoval.isEmpty &&
+              usersAfterSelfRemoval.isNotEmpty) {
             // Promote the first remaining user to admin if no admins left
             await chatRef.update({
-              'admins': [remainingUsers.first],
+              'admins': [usersAfterSelfRemoval.first],
+              'updatedAt': FieldValue.serverTimestamp(),
             });
-            print("Promoted ${remainingUsers.first} to admin.");
+            print("Promoted ${usersAfterSelfRemoval.first} to admin.");
           }
         }
 

@@ -125,6 +125,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
             'admins': [_currentUserId],
             'lastMessage': null,
             'lastMessageTimestamp': FieldValue.serverTimestamp(),
+            'createdAt': FieldValue.serverTimestamp(), // Added createdAt field
           });
 
       print('Group created with ID: ${newChatDoc.id}');

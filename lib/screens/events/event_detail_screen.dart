@@ -14,28 +14,113 @@ class EventDetailScreen extends StatefulWidget {
 }
 
 class _EventDetailScreenState extends State<EventDetailScreen> {
-  final String? _currentUserId = FirebaseAuth.instance.currentUser?.uid;
-  bool _isAttending = false;
-  bool _isLoadingRsvp = false;
-  List<String> _attendeesUids = [];
-  Map<String, dynamic>? _eventDataForEdit;
+  DocumentSnapshot? _eventDataSnapshot;
+  Map<String, dynamic>?
+  _creatorUserData; // Will still fetch username, but not use PFP
+  List<Map<String, dynamic>> _attendeesData = [];
+  bool _isLoading = true;
+  bool _isCurrentUserAttending = false;
+  bool _isProcessingRSVP = false;
+  String? _currentUserId;
+  bool _canViewEvent = false;
 
-  Future<void> _toggleRsvp(Map<String, dynamic> eventData) async {
-    if (_currentUserId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You must be logged in to RSVP.')),
-      );
-      return;
+  @override
+  void initState() {
+    super.initState();
+    _currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    _loadEventDetails();
+  }
+
+  Future<void> _loadEventDetails() async {
+    if (mounted) setState(() => _isLoading = true);
+    try {
+      final eventDoc =
+          await FirebaseFirestore.instance
+              .collection('events')
+              .doc(widget.eventId)
+              .get();
+      if (eventDoc.exists) {
+        _eventDataSnapshot = eventDoc;
+        final eventMap = eventDoc.data() as Map<String, dynamic>;
+
+        bool isPrivate = eventMap['isPrivate'] ?? false;
+        String creatorId = eventMap['creatorId'] ?? '';
+        List<String> allowedUserIds = List<String>.from(
+          eventMap['allowedUserIds'] ?? [],
+        );
+
+        if (!isPrivate) {
+          _canViewEvent = true;
+        } else {
+          if (_currentUserId != null &&
+              (creatorId == _currentUserId ||
+                  allowedUserIds.contains(_currentUserId))) {
+            _canViewEvent = true;
+          } else {
+            _canViewEvent = false;
+          }
+        }
+
+        if (_canViewEvent) {
+          if (creatorId.isNotEmpty) {
+            final creatorDoc =
+                await FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(creatorId)
+                    .get();
+            if (creatorDoc.exists) {
+              _creatorUserData = creatorDoc.data(); // Still fetch for username
+            }
+          }
+
+          List<String> attendeeIds = List<String>.from(
+            eventMap['attendees'] ?? [],
+          );
+          if (_currentUserId != null) {
+            _isCurrentUserAttending = attendeeIds.contains(_currentUserId);
+          }
+          _attendeesData = [];
+          if (attendeeIds.isNotEmpty) {
+            final usersSnapshot =
+                await FirebaseFirestore.instance
+                    .collection('users')
+                    .where(FieldPath.documentId, whereIn: attendeeIds)
+                    .get();
+            for (var userDoc in usersSnapshot.docs) {
+              _attendeesData.add({
+                // Not fetching 'profilePicUrl' anymore
+                'id': userDoc.id,
+                'username': userDoc.data()['username'] ?? 'Unknown',
+              });
+            }
+          }
+        }
+      } else {
+        _canViewEvent = false;
+      }
+    } catch (e) {
+      print("Error loading event details: $e");
+      _canViewEvent = false;
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-    setState(() => _isLoadingRsvp = true);
+  }
+
+  String _formatEventTimestamp(Timestamp timestamp) {
+    return DateFormat(
+      'EEE, MMM d, yyyy \'at\' h:mm a',
+    ).format(timestamp.toDate());
+  }
+
+  Future<void> _toggleRSVP() async {
+    if (_currentUserId == null || _eventDataSnapshot == null || !_canViewEvent)
+      return;
+    setState(() => _isProcessingRSVP = true);
     final eventRef = FirebaseFirestore.instance
         .collection('events')
         .doc(widget.eventId);
-    bool currentAttendance =
-        (eventData['attendees'] as List<dynamic>?)?.contains(_currentUserId) ??
-        false;
     try {
-      if (currentAttendance) {
+      if (_isCurrentUserAttending) {
         await eventRef.update({
           'attendees': FieldValue.arrayRemove([_currentUserId]),
         });
@@ -44,97 +129,107 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           'attendees': FieldValue.arrayUnion([_currentUserId]),
         });
       }
-      if (mounted) {
-        setState(() {
-          _isAttending = !currentAttendance;
-          if (_isAttending)
-            _attendeesUids.add(_currentUserId!);
-          else
-            _attendeesUids.remove(_currentUserId);
-          _isLoadingRsvp = false;
-        });
-      }
+      await _loadEventDetails();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Failed to update RSVP.')));
-        setState(() => _isLoadingRsvp = false);
-      }
+      print("Error toggling RSVP: $e");
+    } finally {
+      if (mounted) setState(() => _isProcessingRSVP = false);
     }
   }
 
   Future<void> _deleteEvent() async {
-    if (_currentUserId == null ||
-        _eventDataForEdit?['creatorId'] != _currentUserId)
+    if (_eventDataSnapshot == null ||
+        _currentUserId !=
+            (_eventDataSnapshot!.data() as Map<String, dynamic>)['creatorId'])
       return;
-    final bool? confirmDelete = await showDialog<bool>(
-      context: context,
-      builder:
-          (BuildContext dialogContext) => AlertDialog(
-            title: const Text('Delete Event'),
-            content: const Text(
-              'Are you sure you want to delete this event? This action cannot be undone.',
-            ),
-            actions: <Widget>[
-              TextButton(
-                child: const Text('Cancel'),
-                onPressed: () => Navigator.of(dialogContext).pop(false),
+    bool confirmDelete =
+        await showDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: const Text('Confirm Delete'),
+              content: const Text(
+                'Are you sure you want to delete this event? This action cannot be undone.',
               ),
-              TextButton(
-                child: const Text(
-                  'Delete',
-                  style: TextStyle(color: Colors.red),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
                 ),
-                onPressed: () => Navigator.of(dialogContext).pop(true),
-              ),
-            ],
-          ),
-    );
-    if (confirmDelete == true) {
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text(
+                    'Delete',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+
+    if (confirmDelete) {
       try {
         await FirebaseFirestore.instance
             .collection('events')
             .doc(widget.eventId)
             .delete();
         if (mounted) {
+          Navigator.of(context).pop();
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Event deleted successfully.')),
           );
-          Navigator.of(context).pop();
         }
       } catch (e) {
-        if (mounted)
+        print("Error deleting event: $e");
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Failed to delete event.')),
           );
+        }
       }
     }
   }
 
-  String _formatEventTimestamp(
-    Timestamp timestamp, {
-    bool justDate = false,
-    bool justTime = false,
+  Widget _buildDetailItem(
+    IconData icon,
+    String label,
+    String value, {
+    bool isLink = false,
+    VoidCallback? onTap,
   }) {
-    final dateTime = timestamp.toDate();
-    if (justDate)
-      return DateFormat.yMMMMd().format(dateTime); // e.g., October 29, 2021
-    if (justTime) return DateFormat.jm().format(dateTime); // e.g., 10:00 AM
-    return DateFormat('EEE, MMM d, yyyy \'at\' h:mm a').format(dateTime);
-  }
-
-  Widget _buildInfoRow(IconData icon, String text) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 20, color: Colors.grey[700]),
-          const SizedBox(width: 12),
+          Icon(icon, color: Colors.blueAccent[700], size: 22),
+          const SizedBox(width: 16),
           Expanded(
-            child: Text(
-              text,
-              style: TextStyle(fontSize: 16, color: Colors.grey[800]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 2),
+                GestureDetector(
+                  onTap: isLink ? onTap : null,
+                  child: Text(
+                    value,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: isLink ? Colors.blueAccent[700] : Colors.black87,
+                      decoration:
+                          isLink
+                              ? TextDecoration.underline
+                              : TextDecoration.none,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -142,265 +237,274 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     );
   }
 
-  Widget _buildAttendeeList(List<String> attendeeUids) {
-    if (attendeeUids.isEmpty)
-      return const Text(
-        'No attendees yet.',
-        style: TextStyle(fontStyle: FontStyle.italic),
-      );
-    const maxDisplayedAttendees = 5; // Show a few, then "and X more"
-    final displayUids = attendeeUids.take(maxDisplayedAttendees).toList();
-    final remainingCount = attendeeUids.length - displayUids.length;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ...displayUids.map(
-          (uid) => FutureBuilder<DocumentSnapshot>(
-            future:
-                FirebaseFirestore.instance.collection('users').doc(uid).get(),
-            builder: (context, AsyncSnapshot<DocumentSnapshot> userSnapshot) {
-              if (!userSnapshot.hasData || !userSnapshot.data!.exists)
-                return const SizedBox.shrink();
-              final username =
-                  (userSnapshot.data!.data()
-                      as Map<String, dynamic>)['username'] ??
-                  'User';
-              return InkWell(
-                onTap:
-                    () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => ProfileScreen(userId: uid),
-                      ),
-                    ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 3.0),
-                  child: Text(
-                    username,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.primary,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        if (remainingCount > 0)
-          Padding(
-            padding: const EdgeInsets.only(top: 4.0),
-            child: Text(
-              "...and $remainingCount more.",
-              style: const TextStyle(
-                fontStyle: FontStyle.italic,
-                color: Colors.grey,
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final Color primaryColor = Colors.blueAccent[700]!;
+    if (_isLoading)
+      return const Scaffold(
+        appBar: null,
+        body: Center(child: CircularProgressIndicator()),
+      );
+
+    if (!_canViewEvent || _eventDataSnapshot == null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Event Not Found'),
+          backgroundColor: Colors.white,
+          elevation: 0.5,
+          iconTheme: const IconThemeData(color: Colors.black87),
+        ),
+        body: const Center(
+          child: Text('This event is private or does not exist.'),
+        ),
+      );
+    }
+
+    final data = _eventDataSnapshot!.data() as Map<String, dynamic>;
+    final String eventName = data['eventName'] ?? 'Unnamed Event';
+    final String description =
+        data['description'] ?? 'No description provided.';
+    final String location = data['location'] ?? 'No location specified.';
+    final Timestamp eventTimestamp = data['eventDate'] ?? Timestamp.now();
+    final String creatorId = data['creatorId'] ?? '';
+    final String creatorUsername =
+        _creatorUserData?['username'] ??
+        data['creatorUsername'] ??
+        'Unknown Creator';
+    // final String? creatorProfilePicUrl = _creatorUserData?['profilePicUrl'] as String?; // No longer used for display
+    final bool isUserCreator = _currentUserId == creatorId;
 
     return Scaffold(
-      body: FutureBuilder<DocumentSnapshot>(
-        future:
-            FirebaseFirestore.instance
-                .collection('events')
-                .doc(widget.eventId)
-                .get(),
-        builder: (context, AsyncSnapshot<DocumentSnapshot> snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return Scaffold(
-              appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0),
-              body: const Center(child: CircularProgressIndicator()),
-            );
-          }
-          if (snapshot.hasError ||
-              !snapshot.hasData ||
-              !snapshot.data!.exists) {
-            return Scaffold(
-              appBar: AppBar(title: const Text('Error')),
-              body: const Center(
-                child: Text('Event not found or error loading.'),
-              ),
-            );
-          }
-
-          final eventData = snapshot.data!.data() as Map<String, dynamic>;
-          _eventDataForEdit = eventData;
-
-          final List<dynamic> fetchedAttendees = eventData['attendees'] ?? [];
-          _attendeesUids = List<String>.from(fetchedAttendees);
-          _isAttending =
-              _currentUserId != null && _attendeesUids.contains(_currentUserId);
-
-          final String eventName = eventData['eventName'] ?? 'Unnamed Event';
-          final String description =
-              eventData['description'] ?? 'No description provided.';
-          final String location = eventData['location'] ?? 'Not specified.';
-          final Timestamp eventTimestamp =
-              eventData['eventDate'] ?? Timestamp.now();
-          final String creatorUsername =
-              eventData['creatorUsername'] ?? 'Unknown';
-          final String? creatorId = eventData['creatorId'] as String?;
-
-          return CustomScrollView(
-            slivers: <Widget>[
-              SliverAppBar(
-                expandedHeight: 200.0,
-                pinned: true,
-                backgroundColor: primaryColor,
-                flexibleSpace: FlexibleSpaceBar(
-                  title: Text(
-                    eventName,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      shadows: [Shadow(blurRadius: 2, color: Colors.black38)],
-                    ),
-                  ),
-                  background: Container(
-                    // Placeholder for Event Image
-                    color: Colors.grey[300],
-                    child: Icon(Icons.event, size: 80, color: Colors.grey[400]),
-                  ),
+      backgroundColor: Colors.grey[50],
+      appBar: AppBar(
+        title: Text(
+          eventName,
+          style: const TextStyle(
+            color: Colors.black87,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        backgroundColor: Colors.white,
+        elevation: 0.5,
+        iconTheme: const IconThemeData(color: Colors.black87),
+        actions: [
+          if (isUserCreator)
+            IconButton(
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: () {
+                Navigator.of(context)
+                    .push(
+                      MaterialPageRoute(
+                        builder:
+                            (context) => CreateEventScreen(
+                              initialEventData: data,
+                              eventId: widget.eventId,
+                            ),
+                      ),
+                    )
+                    .then((_) => _loadEventDetails());
+              },
+              tooltip: 'Edit Event',
+            ),
+          if (isUserCreator)
+            IconButton(
+              icon: Icon(Icons.delete_outline, color: Colors.red[700]),
+              onPressed: _deleteEvent,
+              tooltip: 'Delete Event',
+            ),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: _loadEventDetails,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                height: 200,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: Colors.blueGrey[100],
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                actions: [
-                  if (_currentUserId != null &&
-                      _currentUserId == creatorId) ...[
-                    IconButton(
-                      icon: const Icon(Icons.edit),
-                      tooltip: 'Edit Event',
-                      onPressed:
-                          () => Navigator.of(context)
-                              .push(
-                                MaterialPageRoute(
-                                  builder:
-                                      (context) => CreateEventScreen(
-                                        eventId: widget.eventId,
-                                        initialEventData: _eventDataForEdit,
-                                      ),
-                                ),
-                              )
-                              .then((_) => mounted ? setState(() {}) : null),
+                child: Icon(Icons.event, size: 80, color: Colors.blueGrey[300]),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                eventName,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 16),
+              _buildDetailItem(
+                Icons.calendar_today_outlined,
+                'DATE & TIME',
+                _formatEventTimestamp(eventTimestamp),
+              ),
+              _buildDetailItem(
+                Icons.location_on_outlined,
+                'LOCATION',
+                location,
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.person_outline,
+                      color: Colors.blueAccent[700],
+                      size: 22,
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Delete Event',
-                      onPressed: _deleteEvent,
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "CREATED BY",
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          GestureDetector(
+                            onTap: () {
+                              if (creatorId.isNotEmpty) {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder:
+                                        (context) =>
+                                            ProfileScreen(userId: creatorId),
+                                  ),
+                                );
+                              }
+                            },
+                            child: Row(
+                              children: [
+                                CircleAvatar(
+                                  // Default icon for creator
+                                  radius: 12,
+                                  backgroundColor: Colors.grey[300],
+                                  child: Icon(
+                                    Icons.person,
+                                    size: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  creatorUsername,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    color: Colors.blueAccent[700],
+                                    decoration: TextDecoration.underline,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
-                ],
+                ),
               ),
-              SliverList(
-                delegate: SliverChildListDelegate([
-                  Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "Details",
-                          style: Theme.of(context).textTheme.titleSmall
-                              ?.copyWith(color: Colors.grey[600]),
-                        ),
-                        const SizedBox(height: 16),
-                        _buildInfoRow(
-                          Icons.person_outline,
-                          'Hosted by: $creatorUsername',
-                        ),
-                        _buildInfoRow(Icons.location_on_outlined, location),
-                        _buildInfoRow(
-                          Icons.calendar_today_outlined,
-                          _formatEventTimestamp(eventTimestamp, justDate: true),
-                        ),
-                        _buildInfoRow(
-                          Icons.access_time_outlined,
-                          _formatEventTimestamp(eventTimestamp, justTime: true),
-                        ),
-
-                        // Mockup has contact phone - we don't store this for events
-                        const SizedBox(height: 24),
-                        Text(
-                          'About this event',
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          description,
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[800],
-                            height: 1.5,
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-
-                        Text(
-                          'Attendees (${_attendeesUids.length})',
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        _buildAttendeeList(_attendeesUids),
-                        const SizedBox(height: 32),
-
-                        if (_currentUserId != null)
-                          SizedBox(
-                            width: double.infinity,
-                            child:
-                                _isLoadingRsvp
-                                    ? const Center(
-                                      child: Padding(
-                                        padding: EdgeInsets.all(8.0),
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      ),
-                                    )
-                                    : ElevatedButton(
-                                      onPressed: () => _toggleRsvp(eventData),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor:
-                                            _isAttending
-                                                ? Colors.grey[600]
-                                                : primaryColor,
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 14,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            10,
-                                          ),
-                                        ),
-                                        textStyle: const TextStyle(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      child: Text(
-                                        _isAttending
-                                            ? 'Cancel RSVP'
-                                            : 'RSVP / Attend',
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    ),
-                          ),
-                      ],
-                    ),
+              const SizedBox(height: 12),
+              Text(
+                'About this event:',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                description,
+                style: TextStyle(
+                  fontSize: 15,
+                  color: Colors.grey[800],
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                icon: Icon(
+                  _isCurrentUserAttending
+                      ? Icons.check_circle_outline
+                      : Icons.add_circle_outline,
+                  color: Colors.white,
+                ),
+                label: Text(
+                  _isCurrentUserAttending ? 'ATTENDING' : 'RSVP TO EVENT',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
                   ),
-                ]),
+                ),
+                onPressed: _isProcessingRSVP ? null : _toggleRSVP,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor:
+                      _isCurrentUserAttending
+                          ? Colors.green[600]
+                          : Colors.blueAccent[700],
+                  minimumSize: const Size(double.infinity, 50),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
               ),
+              if (_isProcessingRSVP)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8.0),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+              const SizedBox(height: 24),
+              Text(
+                'Attendees (${_attendeesData.length})',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              _attendeesData.isEmpty
+                  ? const Text(
+                    'No attendees yet. Be the first to RSVP!',
+                    style: TextStyle(color: Colors.grey),
+                  )
+                  : ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _attendeesData.length,
+                    itemBuilder: (context, index) {
+                      final attendee = _attendeesData[index];
+                      return ListTile(
+                        leading: CircleAvatar(
+                          // Default icon for attendees
+                          backgroundColor: Colors.grey[200],
+                          child: Icon(
+                            Icons.person,
+                            size: 20,
+                            color: Colors.grey[500],
+                          ),
+                        ),
+                        title: Text(attendee['username'] ?? 'Unknown Attendee'),
+                        onTap:
+                            () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder:
+                                    (context) =>
+                                        ProfileScreen(userId: attendee['id']),
+                              ),
+                            ),
+                      );
+                    },
+                  ),
             ],
-          );
-        },
+          ),
+        ),
       ),
     );
   }

@@ -1,0 +1,251 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if true; 
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && (
+                      // User updating their own profile
+                      (request.auth.uid == userId &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username', 'displayName', 'bio', 'profilePicUrl', 'following', 'updatedAt', 'fcmToken', 'isOnline', 'lastSeen']) 
+                      ) ||
+                      // Other users following/unfollowing this user
+                      (request.auth.uid != userId &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followers', 'updatedAt']) && 
+                       (request.resource.data.followers == resource.data.followers.concat([request.auth.uid]) || 
+                        request.resource.data.followers == resource.data.followers.removeAll([request.auth.uid]))    
+                      ) ||
+                      // Admin updating another user's isAdmin or isBanned status
+                      (
+                        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true && // Requester is an admin
+                        request.auth.uid != userId && // Admin is updating someone else's profile
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isAdmin', 'isBanned', 'updatedAt']) // Admin can only change these fields
+                      )
+                    );
+    }
+
+    // Posts Collection
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid &&
+                       request.resource.data.keys().hasAll(['caption', 'userId', 'username', 'profilePicUrl', 'imageUrl', 'timestamp', 'likes', 'commentCount']); // Added imageUrl and commentCount
+      allow update: if request.auth != null && (
+                      (resource.data.userId == request.auth.uid &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasAny(['caption', 'editedTimestamp', 'imageUrl', 'updatedAt']) && 
+                       request.resource.data.userId == resource.data.userId && 
+                       request.resource.data.timestamp == resource.data.timestamp 
+                      ) ||
+                      // Any authenticated user liking/unliking the post
+                      (
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'updatedAt']) &&
+                        (request.resource.data.likes == resource.data.likes.concat([request.auth.uid]) || 
+                         request.resource.data.likes == resource.data.likes.removeAll([request.auth.uid])) &&
+                        resource.data.userId == request.resource.data.userId // Keep other essential fields immutable by this rule
+                      )
+                    );
+      allow delete: if request.auth != null && 
+                         (resource.data.userId == request.auth.uid || 
+                          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true);
+
+      // Comments Subcollection
+      match /comments/{commentId} {
+        allow read: if true; 
+        allow create: if request.auth != null && 
+                         request.resource.data.userId == request.auth.uid &&
+                         request.resource.data.type == 'text' &&
+                         request.resource.data.keys().hasAll(['text', 'userId', 'username', 'timestamp', 'type']);
+        allow update: if request.auth != null && resource.data.userId == request.auth.uid &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'updatedAt']);
+        allow delete: if request.auth != null && 
+                         (resource.data.userId == request.auth.uid || 
+                          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true); // Admins can also delete
+      }
+    }
+
+    // Events Collection (as a Collection Group)
+    match /{path=**}/events/{eventId} { 
+      allow read: if ((resource.data.isPrivate == false || !(resource.data.isPrivate is bool)) || 
+                     (request.auth != null && resource.data.isPrivate == true && 
+                       (request.auth.uid == resource.data.creatorId || request.auth.uid in resource.data.allowedUserIds)
+                     ));
+      allow create: if request.auth != null && 
+                       request.resource.data.creatorId == request.auth.uid &&
+                       request.resource.data.isPrivate is bool &&
+                       (request.resource.data.isPrivate == false || 
+                        (request.resource.data.isPrivate == true && 
+                         request.resource.data.allowedUserIds is list && 
+                         request.resource.data.allowedUserIds.hasOnly([request.auth.uid])
+                        )
+                       );
+      allow update: if request.auth != null && 
+                       (resource.data.creatorId == request.auth.uid && 
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(
+                          ['eventName', 'description', 'location', 'eventDate', 
+                           'isPrivate', 'allowedUserIds', 
+                           'updatedAt']
+                        ) &&
+                        (request.resource.data.isPrivate == false ||
+                         (request.resource.data.isPrivate == true && 
+                          request.resource.data.allowedUserIds is list &&
+                          request.resource.data.creatorId in request.resource.data.allowedUserIds
+                         )
+                        )
+                       ) || 
+                       (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendees','updatedAt']) &&
+                        (resource.data.isPrivate == false || 
+                         (resource.data.isPrivate == true && 
+                           (request.auth.uid == resource.data.creatorId || request.auth.uid in resource.data.allowedUserIds)
+                         )
+                        )
+                       );
+      allow delete: if request.auth != null && resource.data.creatorId == request.auth.uid;
+    }
+
+    // Notifications Collection
+    match /notifications/{notificationId} {
+      allow read, update: if request.auth != null && resource.data.recipientId == request.auth.uid;
+      allow create, delete: if false; 
+    }
+
+    // Chats Collection
+    match /chats/{chatId} {
+      allow read: if request.auth != null && request.auth.uid in resource.data.users;
+      // Full, secure allow create rule for chats (1-to-1 and group)
+      allow create: if request.auth != null &&
+                       request.auth.uid in request.resource.data.users &&
+                       request.resource.data.keys().hasAll(['users', 'userNames', 'isGroup', 'lastMessageTimestamp', 'createdAt']) &&
+                       (request.resource.data.isGroup == false ||
+                        (request.resource.data.isGroup == true && 
+                         request.auth.uid in request.resource.data.admins &&
+                         request.resource.data.keys().hasAll(['groupName', 'admins'])
+                        )
+                       );
+      allow update: if request.auth != null && (
+        // Case 1: User is a current member of the group
+        (request.auth.uid in resource.data.users && (
+          // Sub-case 1.1: General updates (sending message, admin changing group name, etc.)
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastMessage', 'lastMessageTimestamp', 'userNames', 'groupName', 'admins', 'updatedAt']) &&
+            // If 'admins' or 'groupName' are changed, requester must be an admin.
+            (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['admins', 'groupName']) || request.auth.uid in resource.data.admins)
+          ) ||
+          // Sub-case 1.2: User leaving the group (self-removal)
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['users', 'admins', 'userNames', 'updatedAt']) &&
+            request.resource.data.users == resource.data.users.removeAll([request.auth.uid]) &&
+            (request.resource.data.admins == resource.data.admins.removeAll([request.auth.uid]) || request.resource.data.admins == resource.data.admins) && // Handles if user wasn't admin
+            (!request.resource.data.userNames.keys().hasAny([request.auth.uid])) // Username is removed by ensuring the key is no longer present
+          ) ||
+          // Sub-case 1.3: Adding self to 'deletedFor' list (for hiding chats)
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deletedFor', 'updatedAt']) &&
+            request.resource.data.deletedFor == resource.data.deletedFor.concat([request.auth.uid])
+          )
+        )) ||
+        // Case 2: Promoting a new admin if the admins list is currently empty.
+        // This relies on client logic to correctly trigger this only when a leaving admin was the last one.
+        (
+          resource.data.admins.size() == 0 && // The group currently has no admins (state before this specific update)
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['admins', 'updatedAt']) && // This update *only* changes 'admins' and 'updatedAt'.
+          request.resource.data.admins.size() == 1 && // A single new admin is being set.
+          request.resource.data.admins[0] in resource.data.users && // The new admin must be an existing user of the group.
+          request.auth.uid != null // Requester must be authenticated.
+        )
+      );
+      // Allow deletion if the group is currently empty (users list has size 0).
+      // The client logic handles removing the user first, then attempting delete if group becomes empty.
+      allow delete: if request.auth != null && resource.data.users.size() == 0;
+
+      match /messages/{messageId} {
+        allow read: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.users;
+        allow create: if request.auth != null &&
+                         request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.users &&
+                         request.resource.data.senderId == request.auth.uid &&
+                         (
+                           (request.resource.data.type == 'text' &&
+                            request.resource.data.keys().hasAll(['senderId', 'senderUsername', 'text', 'timestamp', 'type'])
+                           ) ||
+                           (request.resource.data.type == 'image' &&
+                            request.resource.data.keys().hasAll(['senderId', 'senderUsername', 'imageUrl', 'timestamp', 'type'])
+                           )
+                         );
+        allow update, delete: if false;
+      }
+    }
+
+    // Study Groups Collection
+    match /studyGroups/{studyGroupId} {
+      allow read: if request.auth != null && 
+                     (resource.data.privacy == 'public' || request.auth.uid in resource.data.memberIds || request.auth.uid in resource.data.adminIds);
+      allow create: if request.auth != null &&
+                       request.resource.data.creatorId == request.auth.uid &&
+                       request.auth.uid in request.resource.data.memberIds &&
+                       request.auth.uid in request.resource.data.adminIds &&
+                       request.resource.data.keys().hasAll(['name', 'description', 'privacy', 'creatorId', 'creatorUsername', 'memberIds', 'adminIds', 'createdAt', 'rules']);
+      allow update: if request.auth != null && (
+                       (request.auth.uid in resource.data.adminIds &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'privacy', 'memberIds', 'adminIds', 'rules', 'updatedAt'])) ||
+                       (request.auth.uid in resource.data.memberIds &&
+                        request.resource.data.memberIds == resource.data.memberIds.removeAll([request.auth.uid]) &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'updatedAt'])) || 
+                       (resource.data.privacy == 'public' &&
+                        !(request.auth.uid in resource.data.memberIds) && 
+                        request.resource.data.memberIds == resource.data.memberIds.concat([request.auth.uid]) &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'updatedAt']))
+                     );
+      allow delete: if request.auth != null && request.auth.uid in resource.data.adminIds;
+
+      match /groupJoinRequests/{requestId} {
+        allow read: if request.auth != null && (
+                       request.auth.uid == resource.data.requesterId || 
+                       get(/databases/$(database)/documents/studyGroups/$(studyGroupId)).data.adminIds.hasAny([request.auth.uid]) 
+                     );
+        allow create: if request.auth != null &&
+                         request.resource.data.requesterId == request.auth.uid &&
+                         request.resource.data.groupId == studyGroupId &&
+                         get(/databases/$(database)/documents/studyGroups/$(studyGroupId)).data.privacy == 'private' && 
+                         !(request.auth.uid in get(/databases/$(database)/documents/studyGroups/$(studyGroupId)).data.memberIds) && 
+                         request.resource.data.keys().hasAll(['groupId', 'groupName', 'requesterId', 'timestamp', 'status']) &&
+                         request.resource.data.status == 'pending';
+        allow update: if request.auth != null &&
+                         get(/databases/$(database)/documents/studyGroups/$(studyGroupId)).data.adminIds.hasAny([request.auth.uid]) && 
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']); 
+        allow delete: if request.auth != null && ( 
+                        get(/databases/$(database)/documents/studyGroups/$(studyGroupId)).data.adminIds.hasAny([request.auth.uid]) ||
+                        request.auth.uid == resource.data.requesterId 
+                      );
+      }
+    }
+
+    // Reports Collection
+    match /reports/{reportId} {
+      allow read: if request.auth != null &&
+                     get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true; // Only admins can read reports
+      allow create: if request.auth != null &&
+                       request.resource.data.reporterUserId == request.auth.uid && // Reporter must be the authenticated user
+                       request.resource.data.status == 'pending' && // Initial status must be pending
+                       (
+                         (request.resource.data.reportedContentType == 'post' &&
+                          request.resource.data.keys().hasAll([
+                            'reporterUserId', 'reportedContentId', 'reportedContentType',
+                            'reportedUserId', 'reportedUsername', 'timestamp', 'status'
+                          ])) ||
+                         (request.resource.data.reportedContentType == 'comment' &&
+                          request.resource.data.keys().hasAll([
+                            'reporterUserId', 'reportedContentId', 'reportedContentType',
+                            'parentContentId', 'parentContentType', 'commentTextSnippet',
+                            'reportedUserId', 'reportedUsername', 'timestamp', 'status'
+                          ]))
+                       ); // Ensure all required fields are present based on type
+      allow update: if request.auth != null &&
+                       get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true &&
+                       // Admins can update status, add adminNotes, and an updatedAt timestamp
+                       request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'adminNotes', 'updatedAt']); 
+      allow delete: if request.auth != null &&
+                       get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true; // Only admins can delete reports
+    }
+  }
+}

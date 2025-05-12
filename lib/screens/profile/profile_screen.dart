@@ -5,7 +5,8 @@ import 'package:intl/intl.dart';
 import 'package:sist_link1/screens/profile/edit_profile_screen.dart';
 import 'package:sist_link1/screens/chat/chat_screen.dart';
 import 'package:sist_link1/screens/admin/admin_dashboard_screen.dart';
-import 'package:sist_link1/screens/auth/login_screen.dart'; // For navigation after logout
+// Removed import for my_events_screen.dart
+// LoginScreen import is not strictly needed here if StreamBuilder handles navigation
 
 class ProfileScreen extends StatefulWidget {
   final String userId;
@@ -22,6 +23,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _isProcessingFollow = false;
   List<dynamic> _currentUserFollowing = [];
   String? _currentUserId;
+  // Removed _profilePicUrlDisplay, will use default icon
 
   @override
   void initState() {
@@ -38,8 +40,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               .collection('users')
               .doc(widget.userId)
               .get();
-      if (profileDoc.exists) {
+      if (profileDoc.exists && profileDoc.data() != null) {
         _profileUserData = profileDoc.data();
+        // No longer need to specifically load _profilePicUrlDisplay for NetworkImage
         if (_currentUserId != null && _currentUserId != widget.userId) {
           final currentUserDoc =
               await FirebaseFirestore.instance
@@ -170,14 +173,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _logout() async {
     await FirebaseAuth.instance.signOut();
-    // AuthWrapper in main.dart will handle navigation to LoginScreen
-    // For a more explicit navigation and to clear routes:
-    if (mounted) {
-      Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-        (route) => false,
-      );
-    }
   }
 
   @override
@@ -214,11 +209,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       CircleAvatar(
                         radius: 50,
                         backgroundColor: Colors.grey[300],
-                        child: Icon(
-                          Icons.person,
-                          size: 50,
-                          color: Colors.grey[600],
-                        ),
+                        backgroundImage:
+                            (_profileUserData?['profilePicUrl'] != null &&
+                                    (_profileUserData!['profilePicUrl']
+                                            as String)
+                                        .isNotEmpty)
+                                ? NetworkImage(
+                                  _profileUserData!['profilePicUrl'] as String,
+                                )
+                                : null,
+                        child:
+                            (_profileUserData?['profilePicUrl'] == null ||
+                                    (_profileUserData!['profilePicUrl']
+                                            as String)
+                                        .isEmpty)
+                                ? Icon(
+                                  Icons.person,
+                                  size: 50,
+                                  color: Colors.grey[600],
+                                )
+                                : null,
                       ),
                       const SizedBox(height: 16),
                       Text(
@@ -267,16 +277,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       const SizedBox(height: 24),
                       if (_currentUserId == widget.userId) ...[
                         ElevatedButton(
-                          onPressed:
-                              () => Navigator.of(context)
-                                  .push(
-                                    MaterialPageRoute(
-                                      builder:
-                                          (context) =>
-                                              const EditProfileScreen(),
-                                    ),
-                                  )
-                                  .then((_) => _loadProfileData()),
+                          onPressed: () async {
+                            final result = await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => const EditProfileScreen(),
+                              ),
+                            );
+                            if (result == true && mounted) {
+                              _loadProfileData();
+                            }
+                          },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: primaryColor,
                             padding: const EdgeInsets.symmetric(
@@ -292,6 +302,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             style: TextStyle(color: Colors.white, fontSize: 16),
                           ),
                         ),
+                        // "My Created Events" button removed
                         if (_profileUserData!['isAdmin'] == true) ...[
                           const SizedBox(height: 10),
                           ElevatedButton(
@@ -305,16 +316,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.orangeAccent,
+                              foregroundColor: Colors.white,
                             ),
-                            child: const Text(
-                              'Admin Panel',
-                              style: TextStyle(color: Colors.white),
-                            ),
+                            child: const Text('Admin Panel'),
                           ),
                         ],
-                        const SizedBox(
-                          height: 10,
-                        ), // Space before logout button
+                        const SizedBox(height: 10),
                         TextButton.icon(
                           icon: Icon(Icons.logout, color: Colors.red[700]),
                           label: Text(
@@ -396,7 +403,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           if (postSnapshot.data!.docs.isEmpty)
                             return const Center(
                               child: Padding(
-                                padding: EdgeInsets.all(16.0),
+                                padding: const EdgeInsets.all(16.0),
                                 child: Text('No posts yet.'),
                               ),
                             );
@@ -406,9 +413,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             itemCount: postSnapshot.data!.docs.length,
                             itemBuilder: (context, index) {
                               final post = postSnapshot.data!.docs[index];
+                              // Revert post display to text-only if needed, or remove image part
                               return Card(
                                 child: ListTile(
                                   title: Text(post['caption'] ?? ''),
+                                  // subtitle: post['imageUrl'] != null ? Text("Image post - display removed") : null,
                                 ),
                               );
                             },

@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:sist_link1/screens/chat/chat_screen.dart';
-import 'package:intl/intl.dart';
+import 'package:sist_link1/screens/chat/create_group_screen.dart';
+import 'package:intl/intl.dart'; // For date formatting
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -13,303 +14,294 @@ class ChatListScreen extends StatefulWidget {
 
 class _ChatListScreenState extends State<ChatListScreen> {
   final String? _currentUserId = FirebaseAuth.instance.currentUser?.uid;
-  String _selectedFilter = "All chats"; // For the filter chips
 
-  // (Keep existing _formatLastMessageTimestamp and _buildUserStatusIndicator)
-  String _formatLastMessageTimestamp(Timestamp? timestamp) {
+  String _formatChatTimestamp(Timestamp? timestamp) {
     if (timestamp == null) return '';
-    final DateTime now = DateTime.now();
     final DateTime messageTime = timestamp.toDate();
-    if (now.difference(messageTime).inDays == 0) {
-      return DateFormat.jm().format(messageTime); // e.g., 5:30 PM
-    } else if (now.difference(messageTime).inDays == 1) {
-      return "Yesterday";
+    final DateTime now = DateTime.now();
+    final Duration difference = now.difference(messageTime);
+
+    if (difference.inDays == 0 && now.day == messageTime.day) {
+      return DateFormat.jm().format(messageTime);
+    } else if (difference.inDays == 1 ||
+        (difference.inDays == 0 && now.day != messageTime.day)) {
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      return DateFormat.EEEE().format(messageTime);
     } else {
-      return DateFormat.Md().format(messageTime); // e.g., 1/15
+      return DateFormat.yMd().format(messageTime);
     }
   }
 
-  Widget _buildUserStatusIndicator(String userId, {bool forAvatar = false}) {
-    return StreamBuilder<DocumentSnapshot>(
-      stream:
-          FirebaseFirestore.instance
-              .collection('users')
-              .doc(userId)
-              .snapshots(),
-      builder: (context, AsyncSnapshot<DocumentSnapshot> userSnapshot) {
-        if (!userSnapshot.hasData || userSnapshot.data?.data() == null) {
-          return forAvatar
-              ? const SizedBox.shrink()
-              : Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  shape: BoxShape.circle,
-                ),
-                margin: const EdgeInsets.only(right: 8),
-              );
-        }
-        final userData = userSnapshot.data!.data() as Map<String, dynamic>;
-        final bool isOnline = userData['isOnline'] ?? false;
+  String _formatLastSeen(Timestamp? timestamp, bool isOnline) {
+    if (isOnline) return 'Online';
+    if (timestamp == null) return 'Offline';
+    // Simple last seen, can be expanded later like in ProfileScreen
+    final DateTime lastSeenTime = timestamp.toDate();
+    final Duration difference = DateTime.now().difference(lastSeenTime);
 
-        Color statusColor = isOnline ? Colors.green : Colors.grey[400]!;
-        if (forAvatar) {
-          // Positioned on avatar
-          return Positioned(
-            right: 0,
-            bottom: 0,
-            child: Container(
-              width: 12,
-              height: 12,
-              decoration: BoxDecoration(
-                color: statusColor,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
-              ),
-            ),
-          );
-        }
-        // Default: leading dot
-        return Container(
-          margin: const EdgeInsets.only(right: 8.0),
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
-        );
-      },
-    );
-  }
-
-  Widget _buildFilterChips() {
-    const filters = [
-      "All chats",
-      "Personal",
-      "Work",
-      "Groups",
-    ]; // "Work" is from mockup, not implemented
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children:
-              filters.map((filter) {
-                bool isSelected = _selectedFilter == filter;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                  child: ChoiceChip(
-                    label: Text(filter),
-                    selected: isSelected,
-                    onSelected: (bool selected) {
-                      if (selected) {
-                        setState(() => _selectedFilter = filter);
-                        // TODO: Implement actual filtering logic if this were functional
-                      }
-                    },
-                    selectedColor: Colors.blueAccent[700],
-                    labelStyle: TextStyle(
-                      color: isSelected ? Colors.white : Colors.black87,
-                    ),
-                    backgroundColor: Colors.grey[200],
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    showCheckmark: false,
-                  ),
-                );
-              }).toList(),
-        ),
-      ),
-    );
+    if (difference.inMinutes < 60)
+      return 'Last seen ${difference.inMinutes}m ago';
+    if (difference.inHours < 24) return 'Last seen ${difference.inHours}h ago';
+    return 'Last seen ${DateFormat.yMd().format(lastSeenTime)}';
   }
 
   @override
   Widget build(BuildContext context) {
+    final Color primaryColor = Colors.blueAccent[700]!;
+    final Color subtleTextColor = Colors.grey[600]!;
+
     if (_currentUserId == null) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text(
-            "Recent Chats",
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
-        ),
-        body: const Center(child: Text("Please log in.")),
-      );
+      return const Scaffold(body: Center(child: Text("Please log in.")));
     }
 
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
         title: const Text(
-          'Recent Chats',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+          'Chats',
+          style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
         ),
+        backgroundColor: Colors.white,
+        elevation: 0.5,
         actions: [
           IconButton(
-            icon: Icon(Icons.search, color: Colors.grey[700]),
+            icon: Icon(Icons.group_add_outlined, color: primaryColor),
             onPressed: () {
-              // TODO: Implement chat search functionality
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Chat search not implemented yet.'),
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const CreateGroupScreen(),
                 ),
               );
             },
+            tooltip: 'Create Group Chat',
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildFilterChips(),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream:
-                  FirebaseFirestore.instance
-                      .collection('chats')
-                      .where('users', arrayContains: _currentUserId)
-                      .orderBy('lastMessageTimestamp', descending: true)
-                      .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  return Center(child: Text('Error: ${snapshot.error}'));
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Center(child: Text('No chats yet.'));
-                }
+      body: StreamBuilder<QuerySnapshot>(
+        stream:
+            FirebaseFirestore.instance
+                .collection('chats')
+                .where('users', arrayContains: _currentUserId)
+                .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            print("Error fetching chats: ${snapshot.error}");
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16.0),
+                child: Text(
+                  'No chats yet. Start a new conversation!',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                ),
+              ),
+            );
+          }
 
-                final chats = snapshot.data!.docs;
+          List<DocumentSnapshot> chats = snapshot.data!.docs;
+          chats.sort((a, b) {
+            Timestamp? tsA =
+                (a.data() as Map<String, dynamic>)['lastMessageTimestamp']
+                    as Timestamp?;
+            Timestamp? tsB =
+                (b.data() as Map<String, dynamic>)['lastMessageTimestamp']
+                    as Timestamp?;
+            if (tsA == null && tsB == null) return 0;
+            if (tsA == null) return 1;
+            if (tsB == null) return -1;
+            return tsB.compareTo(tsA);
+          });
 
-                return ListView.separated(
-                  itemCount: chats.length,
-                  separatorBuilder:
-                      (context, index) => Divider(
-                        height: 1,
-                        indent: 70,
-                        endIndent: 16,
-                        color: Colors.grey[200],
-                      ),
-                  itemBuilder: (context, index) {
-                    final chatData =
-                        chats[index].data() as Map<String, dynamic>;
-                    final String chatId = chats[index].id;
-                    final bool isGroup = chatData['isGroup'] ?? false;
-                    final List<dynamic> users = chatData['users'] ?? [];
-                    final Map<String, dynamic> userNames =
-                        chatData['userNames'] ?? {};
-                    final String lastMessage =
-                        chatData['lastMessage'] ?? 'No messages yet.';
-                    final Timestamp? lastTimestamp =
-                        chatData['lastMessageTimestamp'];
+          return ListView.separated(
+            itemCount: chats.length,
+            separatorBuilder:
+                (context, index) =>
+                    Divider(height: 0.5, indent: 70, color: Colors.grey[200]),
+            itemBuilder: (context, index) {
+              final chatDoc = chats[index];
+              final chatData = chatDoc.data() as Map<String, dynamic>;
+              final bool isGroup = chatData['isGroup'] ?? false;
+              String chatName = 'Chat';
+              String otherUserId = '';
 
-                    String chatName = 'Unknown Chat';
-                    String otherUserIdForStatus = '';
-                    Widget avatarWidget;
-
-                    if (isGroup) {
-                      chatName = chatData['groupName'] ?? 'Group Chat';
-                      avatarWidget = CircleAvatar(
-                        backgroundColor: Colors.grey[300],
-                        child: const Icon(Icons.group, color: Colors.white),
-                      );
-                    } else if (users.length == 2) {
-                      otherUserIdForStatus = users.firstWhere(
-                        (id) => id != _currentUserId,
-                        orElse: () => '',
-                      );
-                      if (otherUserIdForStatus.isNotEmpty) {
-                        chatName = userNames[otherUserIdForStatus] ?? 'Chat';
-                      }
-                      avatarWidget = Stack(
-                        children: [
-                          CircleAvatar(
-                            backgroundColor: Colors.grey[300],
-                            child: const Icon(
-                              Icons.person,
-                              color: Colors.white,
-                            ), // Placeholder
-                          ),
-                          if (otherUserIdForStatus.isNotEmpty)
-                            _buildUserStatusIndicator(
-                              otherUserIdForStatus,
-                              forAvatar: true,
+              if (isGroup) {
+                chatName = chatData['groupName'] ?? 'Group Chat';
+                String? groupPhotoUrl = chatData['groupPhotoUrl'] as String?;
+                Widget avatarWidget = CircleAvatar(
+                  radius: 25,
+                  backgroundColor: Colors.grey[300],
+                  backgroundImage:
+                      (groupPhotoUrl != null && groupPhotoUrl.isNotEmpty)
+                          ? NetworkImage(groupPhotoUrl)
+                          : null,
+                  child:
+                      (groupPhotoUrl == null || groupPhotoUrl.isEmpty)
+                          ? Icon(Icons.group, size: 25, color: Colors.grey[700])
+                          : null,
+                );
+                return ListTile(
+                  leading: avatarWidget,
+                  title: Text(
+                    chatName,
+                    style: const TextStyle(fontWeight: FontWeight.w500),
+                  ),
+                  subtitle: Text(
+                    chatData['lastMessage'] ?? 'Group created',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: subtleTextColor, fontSize: 13),
+                  ),
+                  trailing: Text(
+                    _formatChatTimestamp(
+                      chatData['lastMessageTimestamp'] as Timestamp?,
+                    ),
+                    style: TextStyle(color: subtleTextColor, fontSize: 12),
+                  ),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder:
+                            (context) => ChatScreen(
+                              chatId: chatDoc.id,
+                              chatName: chatName,
+                              isGroup: true,
                             ),
-                        ],
-                      );
-                    } else {
-                      avatarWidget = CircleAvatar(
+                      ),
+                    );
+                  },
+                );
+              } else {
+                // 1-on-1 Chat
+                List<dynamic> userIds = chatData['users'] ?? [];
+                Map<String, dynamic> userNames = chatData['userNames'] ?? {};
+                for (String userId in userIds) {
+                  if (userId != _currentUserId) {
+                    otherUserId = userId;
+                    chatName = userNames[userId] ?? 'User';
+                    break;
+                  }
+                }
+
+                return FutureBuilder<DocumentSnapshot>(
+                  future:
+                      FirebaseFirestore.instance
+                          .collection('users')
+                          .doc(otherUserId)
+                          .get(),
+                  builder: (context, userSnapshot) {
+                    Widget leadingAvatar;
+                    String subtitleText;
+
+                    if (userSnapshot.connectionState ==
+                        ConnectionState.waiting) {
+                      leadingAvatar = CircleAvatar(
+                        radius: 25,
                         backgroundColor: Colors.grey[300],
-                        child: const Icon(
-                          Icons.help_outline,
-                          color: Colors.white,
+                        child: const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         ),
                       );
-                    }
+                      subtitleText = 'Loading...';
+                    } else if (!userSnapshot.hasData ||
+                        !userSnapshot.data!.exists) {
+                      leadingAvatar = CircleAvatar(
+                        radius: 25,
+                        backgroundColor: Colors.grey[300],
+                        child: Icon(
+                          Icons.person,
+                          size: 25,
+                          color: Colors.grey[700],
+                        ),
+                      );
+                      subtitleText =
+                          chatData['lastMessage'] ?? 'Chat started'; // Fallback
+                    } else {
+                      final otherUserData =
+                          userSnapshot.data!.data() as Map<String, dynamic>;
+                      final String? picUrl =
+                          otherUserData['profilePicUrl'] as String?;
+                      final bool isOnline = otherUserData['isOnline'] ?? false;
+                      final Timestamp? lastSeen =
+                          otherUserData['lastSeen'] as Timestamp?;
 
-                    // Placeholder for unread count
-                    final int unreadCount =
-                        (index % 3 == 0 && lastMessage.isNotEmpty)
-                            ? (index + 1) % 5
-                            : 0;
-
-                    return ListTile(
-                      leading: avatarWidget,
-                      title: Text(
-                        chatName,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      subtitle: Text(
-                        lastMessage,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: Colors.grey[600]),
-                      ),
-                      trailing: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.end,
+                      leadingAvatar = Stack(
                         children: [
-                          Text(
-                            _formatLastMessageTimestamp(lastTimestamp),
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey[600],
-                            ),
+                          CircleAvatar(
+                            radius: 25,
+                            backgroundColor: Colors.grey[300],
+                            backgroundImage:
+                                (picUrl != null && picUrl.isNotEmpty)
+                                    ? NetworkImage(picUrl)
+                                    : null,
+                            child:
+                                (picUrl == null || picUrl.isEmpty)
+                                    ? Icon(
+                                      Icons.person,
+                                      size: 25,
+                                      color: Colors.grey[700],
+                                    )
+                                    : null,
                           ),
-                          if (unreadCount > 0) ...[
-                            const SizedBox(height: 4),
-                            Container(
-                              padding: const EdgeInsets.all(6),
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: Container(
+                              width: 12,
+                              height: 12,
                               decoration: BoxDecoration(
-                                color: Colors.blueAccent[700],
+                                color:
+                                    isOnline
+                                        ? Colors.greenAccent[400]
+                                        : Colors.grey,
                                 shape: BoxShape.circle,
-                              ),
-                              child: Text(
-                                '$unreadCount',
-                                style: const TextStyle(
+                                border: Border.all(
                                   color: Colors.white,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
+                                  width: 1.5,
                                 ),
                               ),
                             ),
-                          ],
+                          ),
                         ],
+                      );
+                      subtitleText = _formatLastSeen(lastSeen, isOnline);
+                    }
+
+                    return ListTile(
+                      leading: leadingAvatar,
+                      title: Text(
+                        chatName,
+                        style: const TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                      subtitle: Text(
+                        subtitleText,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: subtleTextColor, fontSize: 13),
+                      ),
+                      trailing: Text(
+                        _formatChatTimestamp(
+                          chatData['lastMessageTimestamp'] as Timestamp?,
+                        ),
+                        style: TextStyle(color: subtleTextColor, fontSize: 12),
                       ),
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(
                             builder:
                                 (context) => ChatScreen(
-                                  chatId: chatId,
+                                  chatId: chatDoc.id,
                                   chatName: chatName,
-                                  isGroup: isGroup,
-                                  otherUserId:
-                                      isGroup ? null : otherUserIdForStatus,
+                                  isGroup: false,
+                                  otherUserId: otherUserId,
                                 ),
                           ),
                         );
@@ -317,10 +309,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     );
                   },
                 );
-              },
-            ),
-          ),
-        ],
+              }
+            },
+          );
+        },
       ),
     );
   }

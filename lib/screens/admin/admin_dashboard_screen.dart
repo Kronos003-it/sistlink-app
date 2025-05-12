@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:sist_link1/screens/admin/admin_user_list_screen.dart';
+import 'package:sist_link1/screens/admin/admin_moderate_posts_screen.dart';
+import 'package:sist_link1/screens/admin/admin_review_reports_screen.dart'; // Import the new reports screen
 
 class AdminDashboardScreen extends StatelessWidget {
   const AdminDashboardScreen({super.key});
@@ -73,11 +75,23 @@ class AdminDashboardScreen extends StatelessWidget {
             iconColor: Colors.orange[700],
             title: 'Moderate Content',
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text(
-                    'Content Moderation screen not implemented yet.',
-                  ),
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const AdminModeratePostsScreen(),
+                ),
+              );
+            },
+          ),
+          _buildDashboardItem(
+            // New item for Reviewing Reports
+            context: context,
+            icon: Icons.flag_outlined,
+            iconColor: Colors.redAccent[700],
+            title: 'Review Reports',
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const AdminReviewReportsScreen(),
                 ),
               );
             },
